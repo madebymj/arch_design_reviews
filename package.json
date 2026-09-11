@@ -1,0 +1,28 @@
+{
+  "name": "azure-architecture-copilot",
+  "version": "1.0.0",
+  "description": "A project for analyzing, designing, and implementing Azure workloads based on business unit requirements, adhering to the Cloud Adoption Framework and Azure Well-Architected Framework.",
+  "main": "index.js",
+  "scripts": {
+    "build": "postcss src/styles/input.css -o docs/html/styles.css",
+    "start": "live-server docs/html",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "dependencies": {
+    "tailwindcss": "^2.2.19",
+    "postcss": "^8.4.6",
+    "mermaid": "^10.0.0"
+  },
+  "devDependencies": {
+    "live-server": "^1.2.1"
+  },
+  "keywords": [
+    "azure",
+    "architecture",
+    "cloud",
+    "workloads",
+    "documentation"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}

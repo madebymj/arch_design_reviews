@@ -1,0 +1,5 @@
+/* This file contains styles for the project, including Tailwind CSS configurations. */ 
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
