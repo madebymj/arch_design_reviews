@@ -1,45 +1,47 @@
-# Architecture Review Report
+# Architecture Review Template
 
-## Executive Summary
+## Overview
+This document serves as a template for conducting architecture reviews of Azure workloads. It is designed to ensure that all aspects of the architecture are evaluated against the Cloud Adoption Framework (CAF) and the Azure Well-Architected Framework (WAF).
 
-Overall Score:
+## Project Name
+[Insert Project Name]
 
-Risk Rating:
+## Review Date
+[Insert Review Date]
 
-## Strengths
+## Review Participants
+- [Participant Name 1]
+- [Participant Name 2]
+- [Participant Name 3]
 
-## Findings
+## Business Requirements
+- [List the business requirements that the architecture must meet]
 
-### Finding 1
+## Architecture Overview
+- [Provide a high-level overview of the architecture, including key components and services used]
 
-Severity:
+## Compliance with Cloud Adoption Framework (CAF)
+- [Evaluate the architecture against the CAF principles]
+  - [CAF Principle 1: Description]
+  - [CAF Principle 2: Description]
+  - [CAF Principle 3: Description]
 
-Category:
+## Compliance with Azure Well-Architected Framework (WAF)
+- [Evaluate the architecture against the WAF pillars]
+  - [WAF Pillar 1: Description]
+  - [WAF Pillar 2: Description]
+  - [WAF Pillar 3: Description]
+  - [WAF Pillar 4: Description]
+  - [WAF Pillar 5: Description]
 
-Description:
+## Risks and Mitigations
+- [Identify any risks associated with the architecture and proposed mitigations]
 
-Impact:
+## Recommendations
+- [Provide any recommendations for improving the architecture]
 
-Recommendation:
+## Action Items
+- [List any action items that arise from the review]
 
-Azure Reference:
-
----
-
-## Security Assessment
-
-## Reliability Assessment
-
-## Cost Assessment
-
-## Governance Assessment
-
-## Operations Assessment
-
-## Missing Information
-
-## Decision
-
-Approved
-Approved with Conditions
-Rejected
+## Additional Notes
+- [Include any additional notes or comments relevant to the architecture review]
