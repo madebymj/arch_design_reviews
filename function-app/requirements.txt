@@ -1,0 +1,8 @@
+azure-functions
+azure-identity
+azure-search-documents
+azure-storage-blob
+azure-ai-projects
+openai
+requests
+pydantic>=2,<3

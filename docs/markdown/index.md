@@ -8,10 +8,11 @@ This documentation provides guidelines and templates for validating requests, do
 
 ## Contents
 
-- [CAF Validation Checklist](../templates/caf-validation-checklist.md): A checklist for validating requests against the Cloud Adoption Framework.
-- [WAF Validation Checklist](../templates/waf-validation-checklist.md): A checklist for validating requests against the Azure Well-Architected Framework.
-- [Architecture Review Template](../templates/architecture-review-template.md): A template for conducting architecture reviews of Azure workloads.
-- [Workload Request Template](../templates/workload-request-template.md): A template for documenting workload requests from business units.
+- [CAF Validation Checklist](../../templates/caf-validation-checklist.md): A checklist for validating requests against the Cloud Adoption Framework.
+- [WAF Validation Checklist](../../templates/waf-validation-checklist.md): A checklist for validating requests against the Azure Well-Architected Framework.
+- [Architecture Review Template](../../templates/architecture-review-template.md): A template for conducting architecture reviews of Azure workloads.
+- [Workload Request Template](../../templates/workload-request-template.md): A template for documenting workload requests from business units.
+- [Design Review and Approval Flow](design-review-approval-flow.md): The Azure DevOps to Function to Foundry review lifecycle.
 - [Mermaid Diagram Template](../diagrams/architecture-template.mmd): A template for visualizing the architecture of Azure workloads.
 
 ## Getting Started

@@ -1,11 +1,12 @@
-graph TD;
-    A[Business Requirements] --> B[Analyze Requirements]
-    B --> C[Design Architecture]
-    C --> D[Implement Workload]
-    D --> E[Validate Against CAF]
-    D --> F[Validate Against WAF]
-    E --> G[Documentation]
-    F --> G
-    G --> H[Create Mermaid Diagram]
-    G --> I[Generate Markdown Documentation]
-    G --> J[Generate HTML Documentation]
+flowchart TD
+    A[Business requirements] --> B[Create Azure DevOps Wiki design draft]
+    B --> C[Create linked Azure Boards review item]
+    C --> D[Validate required information]
+    D --> E[CAF and WAF assessment]
+    E --> F[Architecture review agent]
+    F --> G[Publish findings to Wiki and Board]
+    G --> H{Human architecture decision}
+    H -->|Changes required| B
+    H -->|Approved| I[Implement workload]
+    H -->|Rejected| J[Remediation and closure]
+    I --> K[Post-deployment validation]

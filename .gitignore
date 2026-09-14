@@ -1,0 +1,6 @@
+node_modules/
+*.log
+function-app/local.settings.json
+function-app/.venv/
+__pycache__/
+*.pyc

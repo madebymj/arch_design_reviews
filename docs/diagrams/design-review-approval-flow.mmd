@@ -1,0 +1,42 @@
+flowchart LR
+    A[Business request] --> B[Existing Azure DevOps Wiki\nDesigner updates shared design page]
+    B --> C[Designer creates Azure Boards\nreview item with Wiki URL]
+
+    C --> D[Azure DevOps Service Hook\nBoard item created or submitted]
+    D --> E[Azure Function\nHTTP trigger and orchestration]
+
+    E --> F[Azure DevOps REST API\nRead linked Wiki page, revision,\nattachments and Board item]
+    F --> G[Normalize and validate\nDesign package]
+    G --> H[Review package context]
+    H --> I[Azure AI Search\nRetrieve stable guidance]
+    H --> J[Azure Blob Storage\nVersioned input snapshot]
+    I --> K[Existing Microsoft Foundry project\nNew architecture review agent]
+
+    K --> L[CAF/WAF and Azure principles\nReview instructions]
+    K --> M[Structured review result\nFindings, risks, conditions]
+    M --> N[Azure Function\nValidate result and route status]
+
+    N --> O[Azure DevOps Boards\nUpdate item with findings and links]
+    O --> P[Architect manually updates\nexisting Wiki design page]
+    N --> Q[Application Insights\nAudit, metrics and failures]
+
+    P --> R{Human architecture decision}
+    R -->|Changes required| B
+    R -->|Approved| S[Implementation pipeline\nAzure DevOps or GitHub Actions]
+    R -->|Rejected| T[Close with remediation plan]
+    S --> U[Post-deployment validation\nCAF/WAF evidence and review closure]
+
+    subgraph SecurityBoundary[Security and governance boundary]
+        X[Microsoft Entra ID\nManaged identity and least privilege]
+        Y[Azure Key Vault\nSecrets and certificates]
+        Z[Private networking\nPrivate endpoints, DNS and egress]
+    end
+
+    X -. authenticates .-> F
+    X -. authorizes .-> G
+    X -. invokes .-> K
+    Y -. protects .-> F
+    Z -. protects .-> F
+    Z -. protects .-> I
+    Z -. protects .-> J
+    Z -. protects .-> K
