@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 import azure.functions as func
 import requests
@@ -65,8 +65,11 @@ def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
     try:
         payload = req.get_json()
         request = parse_review_request(payload)
+        logger.info("Parsed request: work_item_id=%s wiki_url=%s", request.work_item_id, request.wiki_url)
         wiki = get_wiki_document(request.wiki_url)
+        logger.info("Wiki document fetched: revision=%s length=%d", wiki.revision, len(wiki.content))
         guidance = search_guidance(wiki.content)
+        logger.info("Guidance search returned %d results", len(guidance))
         package = build_review_package(request, wiki, guidance)
         save_snapshot(request.event_id, "input.json", package)
         result = invoke_foundry(package)
@@ -75,9 +78,9 @@ def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
     except (ValueError, ValidationError) as error:
         logger.warning("Invalid architecture review request correlation_id=%s error=%s", correlation_id, error)
         return json_response({"error": str(error)}, status_code=400)
-    except requests.RequestException:
-        logger.exception("External service failure correlation_id=%s", correlation_id)
-        return json_response({"error": "External service failure", "correlationId": correlation_id}, status_code=502)
+    except requests.RequestException as error:
+        logger.exception("External service failure correlation_id=%s error=%s", correlation_id, error)
+        return json_response({"error": f"External service failure: {error}", "correlationId": correlation_id}, status_code=502)
     except Exception:
         logger.exception("Architecture review failed correlation_id=%s", correlation_id)
         return json_response({"error": "Architecture review failed", "correlationId": correlation_id}, status_code=500)
@@ -86,21 +89,55 @@ def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
     return json_response({"status": "completed", "reviewId": result.reviewId, "workItemId": request.work_item_id})
 
 
+def extract_wiki_url(text: str | None) -> str | None:
+    """Extract a wiki URL from HTML or mixed text that may include a description snippet."""
+    if not text:
+        return None
+
+    if text.strip().startswith("https://") and "<" not in text:
+        cleaned = text.strip().rstrip(".,)")
+        if WIKI_URL_PATTERN.search(cleaned):
+            return cleaned
+
+    # Exclude '&' too: HTML-encoded quotes (e.g. &quot;) never appear as a literal
+    # boundary char, so without this the match bleeds into the next URL/text.
+    match = re.search(r"https?://[^\s<>\"'&]+/_wiki/wikis/[^\s<>\"'&]*", text)
+    if match:
+        url = match.group(0).rstrip(".,)>")
+        url = re.sub(r"<.*$", "", url).rstrip("/")
+        return url
+
+    return None
+
+
 def parse_review_request(payload: dict[str, Any]) -> ReviewRequest:
     resource = payload.get("resource") or {}
-    fields = resource.get("fields") or {}
-    work_item_id = resource.get("id") or payload.get("workItemId") or payload.get("resourceId")
-    wiki_url = payload.get("wikiUrl") or fields.get("System.Description") or fields.get("Custom.WikiUrl")
-    if isinstance(wiki_url, str):
-        wiki_match = re.search(r"https?://[^\s<]+/_wiki/wikis/[^\s<]+", wiki_url)
-        wiki_url = wiki_match.group(0).rstrip(".,)") if wiki_match else wiki_url
+    revision = resource.get("revision") or {}
+    revision_fields = revision.get("fields") or {}
+    change_fields = resource.get("fields") or {}
+
+    work_item_id = (
+        resource.get("workItemId")
+        or revision.get("id")
+        or payload.get("workItemId")
+        or payload.get("resourceId")
+    )
+
+    raw_wiki = (
+        payload.get("wikiUrl")
+        or revision_fields.get("Custom.WikiUrl")
+        or revision_fields.get("System.Description")
+        or change_fields.get("Custom.WikiUrl", {}).get("newValue")
+        or change_fields.get("System.Description", {}).get("newValue")
+    )
+    wiki_url = extract_wiki_url(raw_wiki) if isinstance(raw_wiki, str) else None
 
     if not payload.get("id"):
         raise ValueError("The event must include an event id")
     if not work_item_id:
         raise ValueError("The event must include a Board work item id")
     if not wiki_url or not WIKI_URL_PATTERN.search(wiki_url):
-        raise ValueError("The event must include a valid Azure DevOps Wiki URL")
+        raise ValueError(f"The event must include a valid Azure DevOps Wiki URL (got: {raw_wiki[:200] if raw_wiki else 'None'})")
 
     return ReviewRequest(event_id=str(payload["id"]), work_item_id=int(work_item_id), wiki_url=wiki_url)
 
@@ -114,9 +151,12 @@ def get_wiki_document(wiki_url: str) -> WikiDocument:
     wiki_path = "/" + unquote(match.group(2) or "")
     parsed = urlparse(wiki_url)
     project_part = parsed.path.split("/_wiki/", 1)[0].strip("/").split("/")
-    project = project_part[-1] if project_part else ""
-    if not project:
+    raw_project = project_part[-1] if project_part else ""
+    if not raw_project:
         raise ValueError("Wiki URL does not contain a project")
+
+    project = quote(unquote(raw_project), safe="")
+    logger.info("Fetching wiki: project=%s wiki_id=%s path=%s", raw_project, wiki_id, wiki_path)
 
     api_url = f"{os.environ['AZURE_DEVOPS_ORG_URL'].rstrip('/')}/{project}/_apis/wiki/wikis/{wiki_id}/pages"
     response = requests.get(
