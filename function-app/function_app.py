@@ -1,4 +1,5 @@
 import base64
+import html
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ class Finding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    title: str | None = None
     severity: str
     category: str
     description: str
@@ -37,6 +39,7 @@ class ReviewResult(BaseModel):
 
     reviewId: str
     sourceRevision: str
+    summary: str | None = None
     overallRisk: str
     recommendation: str
     findings: list[Finding] = Field(default_factory=list)
@@ -54,6 +57,13 @@ class WikiDocument(BaseModel):
     content: str
     revision: str
     url: str
+
+
+class WikiReference(BaseModel):
+    project: str
+    wiki_id: str
+    page_id: int | None = None
+    path: str | None = None
 
 
 @app.function_name(name="architecture_review")
@@ -142,26 +152,58 @@ def parse_review_request(payload: dict[str, Any]) -> ReviewRequest:
     return ReviewRequest(event_id=str(payload["id"]), work_item_id=int(work_item_id), wiki_url=wiki_url)
 
 
-def get_wiki_document(wiki_url: str) -> WikiDocument:
-    match = WIKI_URL_PATTERN.search(urlparse(wiki_url).path)
+def parse_wiki_reference(wiki_url: str) -> WikiReference:
+    parsed = urlparse(wiki_url)
+    match = WIKI_URL_PATTERN.search(parsed.path)
     if not match:
         raise ValueError("Unable to parse the Wiki URL")
 
     wiki_id = unquote(match.group(1))
-    wiki_path = "/" + unquote(match.group(2) or "")
-    parsed = urlparse(wiki_url)
+    page_part = unquote(match.group(2) or "").strip("/")
     project_part = parsed.path.split("/_wiki/", 1)[0].strip("/").split("/")
     raw_project = project_part[-1] if project_part else ""
     if not raw_project:
         raise ValueError("Wiki URL does not contain a project")
 
     project = quote(unquote(raw_project), safe="")
-    logger.info("Fetching wiki: project=%s wiki_id=%s path=%s", raw_project, wiki_id, wiki_path)
+    if page_part:
+        first_segment, _, remaining_path = page_part.partition("/")
+        if first_segment.isdigit():
+            return WikiReference(
+                project=project,
+                wiki_id=wiki_id,
+                page_id=int(first_segment),
+                path=f"/{remaining_path}" if remaining_path else None,
+            )
+        return WikiReference(project=project, wiki_id=wiki_id, path=f"/{page_part}")
 
-    api_url = f"{os.environ['AZURE_DEVOPS_ORG_URL'].rstrip('/')}/{project}/_apis/wiki/wikis/{wiki_id}/pages"
+    return WikiReference(project=project, wiki_id=wiki_id, path="/")
+
+
+def get_wiki_document(wiki_url: str) -> WikiDocument:
+    wiki = parse_wiki_reference(wiki_url)
+    encoded_wiki_id = quote(wiki.wiki_id, safe="")
+    logger.info(
+        "Fetching wiki: project=%s wiki_id=%s page_id=%s path=%s",
+        wiki.project,
+        wiki.wiki_id,
+        wiki.page_id,
+        wiki.path,
+    )
+
+    api_url = (
+        f"{os.environ['AZURE_DEVOPS_ORG_URL'].rstrip('/')}/{wiki.project}"
+        f"/_apis/wiki/wikis/{encoded_wiki_id}/pages"
+    )
+    params = {"includeContent": "true", "api-version": "7.1-preview.1"}
+    if wiki.page_id is not None:
+        api_url = f"{api_url}/{wiki.page_id}"
+    elif wiki.path:
+        params["path"] = wiki.path
+
     response = requests.get(
         api_url,
-        params={"path": wiki_path, "includeContent": "true", "api-version": "7.1-preview.1"},
+        params=params,
         headers=devops_headers(),
         timeout=30,
     )
@@ -216,11 +258,10 @@ def build_review_package(request: ReviewRequest, wiki: WikiDocument, guidance: l
 def invoke_foundry(package: dict[str, Any]) -> ReviewResult:
     endpoint = os.environ["AZURE_AI_PROJECT_ENDPOINT"]
     agent_name = os.environ["FOUNDRY_AGENT_NAME"]
-    project_client = AIProjectClient(endpoint=endpoint, credential=DefaultAzureCredential())
-    openai_client = project_client.get_openai_client()
+    project_client = AIProjectClient(endpoint=endpoint, credential=DefaultAzureCredential(), allow_preview=True)
+    openai_client = project_client.get_openai_client(agent_name=agent_name)
     response = openai_client.responses.create(
         input=json.dumps(package),
-        extra_body={"agent_reference": {"name": agent_name, "type": "agent_reference"}},
     )
     output_text = getattr(response, "output_text", None)
     if not output_text:
@@ -247,7 +288,7 @@ def update_board(work_item_id: int, result: ReviewResult) -> None:
     org_url = os.environ["AZURE_DEVOPS_ORG_URL"].rstrip("/")
     project = os.environ["AZURE_DEVOPS_PROJECT"]
     api_url = f"{org_url}/{project}/_apis/wit/workitems/{work_item_id}"
-    history = json.dumps(result.model_dump(), ensure_ascii=False)
+    history = format_review_history(result)
     patch = [{"op": "add", "path": "/fields/System.History", "value": history}]
     response = requests.patch(
         api_url,
@@ -257,6 +298,67 @@ def update_board(work_item_id: int, result: ReviewResult) -> None:
         timeout=30,
     )
     response.raise_for_status()
+
+
+def format_review_history(result: ReviewResult) -> str:
+    findings_rows = "\n".join(
+        "<tr>"
+        f"<td>{html.escape(finding.id)}</td>"
+        f"<td>{html.escape(finding.severity)}</td>"
+        f"<td>{html.escape(finding.category)}</td>"
+        f"<td>{html.escape(finding.title or finding.description)}</td>"
+        f"<td>{html.escape(finding.recommendation)}</td>"
+        "</tr>"
+        for finding in result.findings
+    )
+    findings_table = (
+        "<table>"
+        "<thead><tr><th>ID</th><th>Severity</th><th>Category</th><th>Finding</th><th>Recommendation</th></tr></thead>"
+        f"<tbody>{findings_rows}</tbody>"
+        "</table>"
+        if result.findings
+        else "<p>No findings returned.</p>"
+    )
+
+    details = "\n".join(format_finding_detail(finding) for finding in result.findings)
+    summary = f"<p>{html.escape(result.summary)}</p>" if result.summary else ""
+
+    return (
+        "<h2>Architecture Review Result</h2>"
+        f"<p><strong>Review ID:</strong> {html.escape(result.reviewId)}</p>"
+        f"<p><strong>Source revision:</strong> {html.escape(result.sourceRevision)}</p>"
+        f"<p><strong>Overall risk:</strong> {html.escape(result.overallRisk)}</p>"
+        f"<p><strong>Recommendation:</strong> {html.escape(result.recommendation)}</p>"
+        f"{summary}"
+        "<h3>Findings summary</h3>"
+        f"{findings_table}"
+        "<h3>Detailed findings</h3>"
+        f"{details if details else '<p>No detailed findings.</p>'}"
+        "<h3>Missing information</h3>"
+        f"{format_html_list(result.missingInformation, 'No missing information identified.')}"
+        "<h3>Assumptions</h3>"
+        f"{format_html_list(result.assumptions, 'No assumptions returned.')}"
+    )
+
+
+def format_finding_detail(finding: Finding) -> str:
+    title = finding.title or finding.description
+    return (
+        f"<h4>{html.escape(finding.id)} - {html.escape(title)}</h4>"
+        f"<p><strong>Severity:</strong> {html.escape(finding.severity)} | "
+        f"<strong>Category:</strong> {html.escape(finding.category)}</p>"
+        f"<p><strong>Description:</strong> {html.escape(finding.description)}</p>"
+        f"<p><strong>Impact:</strong> {html.escape(finding.impact)}</p>"
+        f"<p><strong>Recommendation:</strong> {html.escape(finding.recommendation)}</p>"
+        "<p><strong>Evidence:</strong></p>"
+        f"{format_html_list(finding.evidence, 'No evidence provided.')}"
+    )
+
+
+def format_html_list(items: list[str], empty_message: str) -> str:
+    if not items:
+        return f"<p>{html.escape(empty_message)}</p>"
+    return "<ul>" + "".join(f"<li>{html.escape(item)}</li>" for item in items) + "</ul>"
 
 
 def devops_headers() -> dict[str, str]:
