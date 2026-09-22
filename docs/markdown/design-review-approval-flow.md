@@ -19,6 +19,8 @@ flowchart LR
     G --> H[Normalize and validate package]
     H --> I[Versioned snapshot]
     H --> J[New agent in existing Foundry project]
+    J --> R[Azure AI Search knowledge tool]
+    R --> J
     J --> K[Structured findings and recommendation]
     K --> F
     F --> L[Update Board item with findings]
@@ -41,7 +43,8 @@ The source Mermaid diagram is [../diagrams/design-review-approval-flow.mmd](../d
 | Azure DevOps Service Hook | Emits the Board-item-created or submitted event that starts the review. A Wiki edit alone does not start a review. |
 | Azure Function | Authenticates the event, reads the source documents, validates and normalizes the review package, invokes Foundry, validates the response, and updates the Board. It does not edit the Wiki. |
 | Blob Storage | Keeps immutable, versioned input and output snapshots for traceability and replay. |
-| Existing Microsoft Foundry project and new review agent | The Foundry project already exists. A dedicated architecture-review agent must be created in that project to apply the review instructions and produce structured findings against CAF, WAF, Azure principles, security, reliability, cost, governance, and operations. |
+| Existing Microsoft Foundry project and new review agent | The Foundry project already exists. A dedicated architecture-review agent reads the complete design, runs focused queries through its configured Azure AI Search knowledge tool, and produces structured findings against CAF, WAF, Azure principles, security, reliability, cost, governance, and operations. |
+| Azure AI Search | Stores curated guidance. The Foundry agent, not the Function, retrieves relevant guidance after reviewing the complete design. |
 | Application Insights | Captures correlation IDs, timing, failures, review status, and non-sensitive audit metadata. |
 | Entra ID and managed identities | Provides workload authentication and least-privilege access to Azure resources. |
 | Key Vault | Stores secrets that cannot use managed identity, such as Azure DevOps integration credentials or certificates. |
@@ -53,7 +56,7 @@ The source Mermaid diagram is [../diagrams/design-review-approval-flow.mmd](../d
 2. **Ready for review**: The designer finishes a revision and creates a linked Board item containing the Wiki URL, page path, owner, scope, and requested review date.
 3. **In review**: The Board service hook starts the Function. The Function retrieves the exact Wiki revision and linked artifacts.
 4. **Normalized**: The Function validates required fields, removes unsupported content, records the source revision, and creates a versioned review package.
-5. **Agent review**: The Foundry agent evaluates the package using the repository instructions and checklists.
+5. **Agent review**: The Foundry agent reads the complete design, retrieves targeted guidance through its configured Search knowledge tool for every applicable review domain, and evaluates the design.
 6. **Findings recorded**: The Function validates the agent response and writes findings, severity, evidence links, and the recommendation to the Board item only.
 7. **Architect revision**: The architect reviews the Board findings, manually updates the existing Wiki design page, and resubmits a Board item containing the new Wiki revision.
 8. **Decision pending**: An authorized human reviews the updated design and Board findings.
@@ -75,6 +78,7 @@ The Function should send the agent a bounded package containing:
 - CAF checklist results and WAF checklist results.
 - Previous review findings and the status of each remediation item.
 - Explicit instruction that the agent recommends a decision but does not approve or deploy.
+- Explicit instruction that the agent must retrieve targeted guidance for each applicable review domain and cite guidance or design evidence for every finding.
 
 The package must exclude secrets, access tokens, unnecessary personal data, and raw credentials. Large attachments should be referenced or summarized rather than blindly included in the prompt.
 
@@ -137,7 +141,7 @@ The Function must reject malformed responses, preserve the raw response in the c
 
 - Implement the Function HTTP trigger and event validation. The initial scaffold is in [function-app/](../../function-app/).
 - Read the Wiki page identified by the Board link and read the Board item through the Azure DevOps REST API.
-- Query the stable Azure AI Search knowledge index for relevant guidance; the Wiki remains the authoritative current design.
+- Configure the Foundry agent to query the stable Azure AI Search knowledge index for targeted guidance after reading the complete design; the Wiki remains the authoritative current design.
 - Normalize, version, and store the review package.
 - Invoke Foundry, validate JSON, and update the work item. Do not write to the Wiki.
 

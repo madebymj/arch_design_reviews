@@ -11,7 +11,6 @@ import azure.functions as func
 import requests
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
-from azure.search.documents import SearchClient
 from azure.storage.blob import BlobServiceClient
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -19,6 +18,10 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 logger = logging.getLogger(__name__)
 
 WIKI_URL_PATTERN = re.compile(r"/_wiki/wikis/([^/]+)(?:/([^?#]+))?", re.IGNORECASE)
+
+
+class IgnoredEvent(Exception):
+    pass
 
 
 class Finding(BaseModel):
@@ -51,6 +54,8 @@ class ReviewRequest(BaseModel):
     event_id: str
     work_item_id: int
     wiki_url: str
+    devops_project: str
+    trigger_tag: str
 
 
 class WikiDocument(BaseModel):
@@ -75,16 +80,23 @@ def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
     try:
         payload = req.get_json()
         request = parse_review_request(payload)
-        logger.info("Parsed request: work_item_id=%s wiki_url=%s", request.work_item_id, request.wiki_url)
+        logger.info(
+            "Parsed request: work_item_id=%s project=%s trigger_tag=%s wiki_url=%s",
+            request.work_item_id,
+            request.devops_project,
+            request.trigger_tag,
+            request.wiki_url,
+        )
         wiki = get_wiki_document(request.wiki_url)
         logger.info("Wiki document fetched: revision=%s length=%d", wiki.revision, len(wiki.content))
-        guidance = search_guidance(wiki.content)
-        logger.info("Guidance search returned %d results", len(guidance))
-        package = build_review_package(request, wiki, guidance)
+        package = build_review_package(request, wiki)
         save_snapshot(request.event_id, "input.json", package)
         result = invoke_foundry(package)
         save_snapshot(request.event_id, "result.json", result.model_dump())
-        update_board(request.work_item_id, result)
+        update_board(request.devops_project, request.work_item_id, result)
+    except IgnoredEvent as event:
+        logger.info("Architecture review event ignored correlation_id=%s reason=%s", correlation_id, event)
+        return json_response({"status": "ignored", "reason": str(event)})
     except (ValueError, ValidationError) as error:
         logger.warning("Invalid architecture review request correlation_id=%s error=%s", correlation_id, error)
         return json_response({"error": str(error)}, status_code=400)
@@ -141,6 +153,10 @@ def parse_review_request(payload: dict[str, Any]) -> ReviewRequest:
         or change_fields.get("System.Description", {}).get("newValue")
     )
     wiki_url = extract_wiki_url(raw_wiki) if isinstance(raw_wiki, str) else None
+    trigger_tag = os.environ.get("REVIEW_TRIGGER_TAG", "design review").strip()
+    tag_change = change_fields.get("System.Tags") or {}
+    new_tags = parse_tags(tag_change.get("newValue"))
+    old_tags = parse_tags(tag_change.get("oldValue"))
 
     if not payload.get("id"):
         raise ValueError("The event must include an event id")
@@ -148,8 +164,39 @@ def parse_review_request(payload: dict[str, Any]) -> ReviewRequest:
         raise ValueError("The event must include a Board work item id")
     if not wiki_url or not WIKI_URL_PATTERN.search(wiki_url):
         raise ValueError(f"The event must include a valid Azure DevOps Wiki URL (got: {raw_wiki[:200] if raw_wiki else 'None'})")
+    if not trigger_tag:
+        raise ValueError("REVIEW_TRIGGER_TAG must not be empty")
+    normalized_trigger_tag = trigger_tag.casefold()
+    if normalized_trigger_tag not in new_tags:
+        raise IgnoredEvent(f"The '{trigger_tag}' tag was not added")
+    if normalized_trigger_tag in old_tags:
+        raise IgnoredEvent(f"The work item already had the '{trigger_tag}' tag")
 
-    return ReviewRequest(event_id=str(payload["id"]), work_item_id=int(work_item_id), wiki_url=wiki_url)
+    wiki = parse_wiki_reference(wiki_url)
+    validate_allowed_project(wiki.project)
+    return ReviewRequest(
+        event_id=str(payload["id"]),
+        work_item_id=int(work_item_id),
+        wiki_url=wiki_url,
+        devops_project=wiki.project,
+        trigger_tag=trigger_tag,
+    )
+
+
+def parse_tags(value: Any) -> set[str]:
+    if not isinstance(value, str):
+        return set()
+    return {tag.strip().casefold() for tag in value.split(";") if tag.strip()}
+
+
+def validate_allowed_project(project: str) -> None:
+    configured_projects = os.environ.get("AZURE_DEVOPS_ALLOWED_PROJECTS") or os.environ.get("AZURE_DEVOPS_PROJECT")
+    if not configured_projects:
+        raise ValueError("AZURE_DEVOPS_ALLOWED_PROJECTS is not configured")
+
+    allowed_projects = {value.strip().casefold() for value in configured_projects.split(",") if value.strip()}
+    if project.casefold() not in allowed_projects:
+        raise ValueError(f"Azure DevOps project '{project}' is not approved for architecture reviews")
 
 
 def parse_wiki_reference(wiki_url: str) -> WikiReference:
@@ -165,7 +212,7 @@ def parse_wiki_reference(wiki_url: str) -> WikiReference:
     if not raw_project:
         raise ValueError("Wiki URL does not contain a project")
 
-    project = quote(unquote(raw_project), safe="")
+    project = unquote(raw_project)
     if page_part:
         first_segment, _, remaining_path = page_part.partition("/")
         if first_segment.isdigit():
@@ -192,7 +239,7 @@ def get_wiki_document(wiki_url: str) -> WikiDocument:
     )
 
     api_url = (
-        f"{os.environ['AZURE_DEVOPS_ORG_URL'].rstrip('/')}/{wiki.project}"
+        f"{os.environ['AZURE_DEVOPS_ORG_URL'].rstrip('/')}/{quote(wiki.project, safe='')}"
         f"/_apis/wiki/wikis/{encoded_wiki_id}/pages"
     )
     params = {"includeContent": "true", "api-version": "7.1-preview.1"}
@@ -216,37 +263,34 @@ def get_wiki_document(wiki_url: str) -> WikiDocument:
     return WikiDocument(content=content, revision=revision, url=wiki_url)
 
 
-def search_guidance(design_content: str) -> list[dict[str, str]]:
-    endpoint = os.environ.get("AZURE_SEARCH_ENDPOINT")
-    index_name = os.environ.get("AZURE_SEARCH_INDEX")
-    if not endpoint or not index_name:
-        return []
-
-    terms = " ".join(design_content.split()[:120])
-    client = SearchClient(endpoint=endpoint, index_name=index_name, credential=DefaultAzureCredential())
-    results = client.search(
-        search_text=terms,
-        top=8,
-        select=["title", "chunk", "metadata_storage_path"],
-    )
-    return [
-        {
-            "title": result.get("title", ""),
-            "content": result.get("chunk", ""),
-            "sourcePath": result.get("metadata_storage_path", ""),
-        }
-        for result in results
-    ]
-
-
-def build_review_package(request: ReviewRequest, wiki: WikiDocument, guidance: list[dict[str, str]]) -> dict[str, Any]:
+def build_review_package(request: ReviewRequest, wiki: WikiDocument) -> dict[str, Any]:
     return {
         "reviewId": f"board-{request.work_item_id}-{request.event_id}",
         "sourceRevision": wiki.revision,
         "wikiUrl": wiki.url,
         "boardItemId": request.work_item_id,
+        "azureDevOpsProject": request.devops_project,
         "design": {"content": wiki.content, "attachments": []},
-        "knowledgeContext": {"searchIndex": os.environ.get("AZURE_SEARCH_INDEX"), "results": guidance},
+        "guidanceRetrieval": {
+            "owner": "foundry-agent",
+            "useConfiguredKnowledgeTool": True,
+            "requiredDomains": [
+                "architecture",
+                "security",
+                "identity",
+                "networking",
+                "reliability",
+                "operations",
+                "governance",
+                "cost",
+            ],
+            "requirements": [
+                "Review the complete design before choosing search queries.",
+                "Use focused searches for each applicable review domain.",
+                "Ground every finding in retrieved guidance or explicit design evidence.",
+                "Include the relevant source or design section in each finding's evidence.",
+            ],
+        },
         "constraints": {
             "writeFindingsToBoardOnly": True,
             "doNotModifyWiki": True,
@@ -284,10 +328,9 @@ def save_snapshot(event_id: str, name: str, value: dict[str, Any]) -> None:
     blob.upload_blob(json.dumps(value, ensure_ascii=False), overwrite=True)
 
 
-def update_board(work_item_id: int, result: ReviewResult) -> None:
+def update_board(project: str, work_item_id: int, result: ReviewResult) -> None:
     org_url = os.environ["AZURE_DEVOPS_ORG_URL"].rstrip("/")
-    project = os.environ["AZURE_DEVOPS_PROJECT"]
-    api_url = f"{org_url}/{project}/_apis/wit/workitems/{work_item_id}"
+    api_url = f"{org_url}/{quote(project, safe='')}/_apis/wit/workitems/{work_item_id}"
     history = format_review_history(result)
     patch = [{"op": "add", "path": "/fields/System.History", "value": history}]
     response = requests.patch(

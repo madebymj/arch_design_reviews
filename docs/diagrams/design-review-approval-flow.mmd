@@ -8,9 +8,10 @@ flowchart LR
     E --> F[Azure DevOps REST API\nRead linked Wiki page, revision,\nattachments and Board item]
     F --> G[Normalize and validate\nDesign package]
     G --> H[Review package context]
-    H --> I[Azure AI Search\nRetrieve stable guidance]
     H --> J[Azure Blob Storage\nVersioned input snapshot]
-    I --> K[Existing Microsoft Foundry project\nNew architecture review agent]
+    H --> K[Existing Microsoft Foundry project\nNew architecture review agent]
+    K --> I[Azure AI Search\nAgent retrieves targeted guidance]
+    I --> K
 
     K --> L[CAF/WAF and Azure principles\nReview instructions]
     K --> M[Structured review result\nFindings, risks, conditions]
