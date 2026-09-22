@@ -6,6 +6,7 @@
     "AZURE_DEVOPS_ORG_URL": "https://dev.azure.com/your-organization",
     "AZURE_DEVOPS_ALLOWED_PROJECTS": "your-test-project,your-production-project",
     "REVIEW_TRIGGER_TAG": "design review",
+    "REVIEW_IDEMPOTENCY_CONTAINER": "architecture-review-events",
     "AZURE_DEVOPS_PAT": "local-only-use-key-vault-in-azure",
     "AZURE_STORAGE_BLOB_ENDPOINT": "https://yourstorageaccount.blob.core.windows.net",
     "AZURE_AI_PROJECT_ENDPOINT": "https://your-project.api.azureml.ms",

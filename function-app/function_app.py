@@ -1,15 +1,21 @@
 import base64
+import hashlib
 import html
 import json
 import logging
 import os
 import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
+from uuid import uuid4
 
 import azure.functions as func
 import requests
 from azure.ai.projects import AIProjectClient
+from azure.core import MatchConditions
+from azure.core.exceptions import AzureError, ResourceExistsError, ResourceModifiedError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -18,10 +24,19 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 logger = logging.getLogger(__name__)
 
 WIKI_URL_PATTERN = re.compile(r"/_wiki/wikis/([^/]+)(?:/([^?#]+))?", re.IGNORECASE)
+EVENT_CLAIM_STALE_AFTER = timedelta(minutes=10)
 
 
 class IgnoredEvent(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class ReviewEventClaim:
+    event_id: str
+    token: str
+    blob: Any
+    etag: str
 
 
 class Finding(BaseModel):
@@ -76,10 +91,15 @@ class WikiReference(BaseModel):
 def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
     correlation_id = req.headers.get("x-correlation-id") or req.headers.get("x-ms-invocation-id") or "unknown"
     logger.info("Architecture review started correlation_id=%s", correlation_id)
+    request: ReviewRequest | None = None
+    event_claim: ReviewEventClaim | None = None
+    review_completed = False
+    board_update_started = False
 
     try:
         payload = req.get_json()
         request = parse_review_request(payload)
+        event_claim = claim_review_event(request.event_id)
         logger.info(
             "Parsed request: work_item_id=%s project=%s trigger_tag=%s wiki_url=%s",
             request.work_item_id,
@@ -93,7 +113,10 @@ def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
         save_snapshot(request.event_id, "input.json", package)
         result = invoke_foundry(package)
         save_snapshot(request.event_id, "result.json", result.model_dump())
+        board_update_started = True
         update_board(request.devops_project, request.work_item_id, result)
+        complete_review_event(event_claim)
+        review_completed = True
     except IgnoredEvent as event:
         logger.info("Architecture review event ignored correlation_id=%s reason=%s", correlation_id, event)
         return json_response({"status": "ignored", "reason": str(event)})
@@ -106,6 +129,12 @@ def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
     except Exception:
         logger.exception("Architecture review failed correlation_id=%s", correlation_id)
         return json_response({"error": "Architecture review failed", "correlationId": correlation_id}, status_code=500)
+    finally:
+        if event_claim and not review_completed:
+            if board_update_started:
+                mark_review_event_failed_after_write(event_claim)
+            else:
+                release_review_event(event_claim)
 
     logger.info("Architecture review completed correlation_id=%s review_id=%s", correlation_id, result.reviewId)
     return json_response({"status": "completed", "reviewId": result.reviewId, "workItemId": request.work_item_id})
@@ -326,6 +355,93 @@ def save_snapshot(event_id: str, name: str, value: dict[str, Any]) -> None:
     client = BlobServiceClient(account_url=endpoint, credential=DefaultAzureCredential())
     blob = client.get_blob_client(container=container, blob=f"{event_id}/{name}")
     blob.upload_blob(json.dumps(value, ensure_ascii=False), overwrite=True)
+
+
+def claim_review_event(event_id: str) -> ReviewEventClaim:
+    connection_string = os.environ.get("AzureWebJobsStorage")
+    if not connection_string:
+        raise RuntimeError("AzureWebJobsStorage is required for review event idempotency")
+
+    container_name = os.environ.get("REVIEW_IDEMPOTENCY_CONTAINER", "architecture-review-events")
+    service = BlobServiceClient.from_connection_string(connection_string)
+    container = service.get_container_client(container_name)
+    try:
+        container.create_container()
+    except ResourceExistsError:
+        pass
+
+    event_hash = hashlib.sha256(event_id.encode("utf-8")).hexdigest()
+    claim = container.get_blob_client(f"events/{event_hash}.json")
+    token = str(uuid4())
+    claimed_at = datetime.now(timezone.utc)
+    value = {
+        "eventId": event_id,
+        "status": "processing",
+        "claimedAt": claimed_at.isoformat(),
+        "claimToken": token,
+    }
+    try:
+        claim.upload_blob(json.dumps(value), overwrite=False)
+    except ResourceExistsError:
+        existing = json.loads(claim.download_blob().readall())
+        status = existing.get("status")
+        claimed_at_value = existing.get("claimedAt")
+        if status != "processing":
+            raise IgnoredEvent(f"Azure DevOps event '{event_id}' was already accepted")
+        if not isinstance(claimed_at_value, str):
+            raise RuntimeError(f"Azure DevOps event '{event_id}' has an invalid claim")
+        existing_claimed_at = datetime.fromisoformat(claimed_at_value)
+        if claimed_at - existing_claimed_at <= EVENT_CLAIM_STALE_AFTER:
+            raise IgnoredEvent(f"Azure DevOps event '{event_id}' is already being processed")
+
+        existing_etag = claim.get_blob_properties().etag
+        try:
+            claim.upload_blob(
+                json.dumps(value),
+                overwrite=True,
+                etag=existing_etag,
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except ResourceModifiedError as error:
+            raise IgnoredEvent(f"Azure DevOps event '{event_id}' is already being processed") from error
+        logger.warning("Recovered stale review event claim event_id=%s", event_id)
+
+    logger.info("Review event claimed event_id=%s", event_id)
+    return ReviewEventClaim(event_id=event_id, token=token, blob=claim, etag=claim.get_blob_properties().etag)
+
+
+def complete_review_event(claim: ReviewEventClaim) -> None:
+    update_review_event_claim(claim, "completed")
+
+
+def mark_review_event_failed_after_write(claim: ReviewEventClaim) -> None:
+    try:
+        update_review_event_claim(claim, "failed-after-board-write-attempt")
+    except AzureError:
+        logger.exception("Failed to mark uncertain Board write event_id=%s", claim.event_id)
+
+
+def update_review_event_claim(claim: ReviewEventClaim, status: str) -> None:
+    value = {
+        "eventId": claim.event_id,
+        "status": status,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "claimToken": claim.token,
+    }
+    claim.blob.upload_blob(
+        json.dumps(value),
+        overwrite=True,
+        etag=claim.etag,
+        match_condition=MatchConditions.IfNotModified,
+    )
+
+
+def release_review_event(claim: ReviewEventClaim) -> None:
+    try:
+        claim.blob.delete_blob(etag=claim.etag, match_condition=MatchConditions.IfNotModified)
+        logger.info("Review event claim released after failure event_id=%s", claim.event_id)
+    except AzureError:
+        logger.exception("Failed to release review event claim event_id=%s", claim.event_id)
 
 
 def update_board(project: str, work_item_id: int, result: ReviewResult) -> None:

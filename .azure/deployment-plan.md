@@ -351,3 +351,74 @@ The Function code no longer uses Search directly. The Search assignments were de
 ### Deployed endpoint
 
 `https://archdesignreview.azurewebsites.net/api/architecture-review`
+
+---
+
+## 12. Duplicate-event idempotency update
+
+**Goal:** Prevent Azure DevOps webhook retries from invoking the Foundry agent and writing the same Board comment more than once.
+
+**Observed evidence:** Work items `189445` and `189466` each received duplicate processing for one Azure DevOps event ID. The first request exceeded the service-hook response window, and a concurrent retry completed the same review a second time.
+
+**Implementation:**
+
+- Atomically claim the SHA-256 hash of each Azure DevOps event ID in a dedicated Blob container.
+- Use the existing `AzureWebJobsStorage` account; do not create or modify an Azure resource.
+- Return HTTP `200` with `status: ignored` when the event claim already exists.
+- Retain completed claims, recover processing claims older than ten minutes, and release claims after failures that occur before Board writeback.
+- Retain a failure marker after an uncertain Board write so an automatic retry cannot create a second comment.
+- Do not store design content, credentials, or access tokens in the claim.
+
+**Validation checklist:**
+
+- [x] Python and Pylance syntax checks pass.
+- [x] The same event delivered twice invokes Foundry once and writes to Boards once.
+- [x] A failed review releases its claim and can be retried.
+- [x] A stale processing claim is recovered after ten minutes.
+- [x] An uncertain Board write is not automatically retried.
+- [x] Production dependencies install and the deployment package imports.
+- [x] The package excludes tests, local settings, caches, and documentation.
+- [x] Existing Function App configuration, identity, location, and HTTPS settings remain unchanged.
+
+**Deployment checklist:**
+
+- [x] Set `REVIEW_IDEMPOTENCY_CONTAINER=architecture-review-events`.
+- [x] Deploy the validated code package to the existing `archdesignreview` Function App.
+- [x] Confirm Function discovery and healthy state.
+- [x] Seed a safe test event claim and verify a matching request returns HTTP `200` ignored without Wiki, Foundry, or Board calls.
+- [x] Verify Application Insights records duplicate suppression.
+
+### Validation proof
+
+| Check | Evidence | Result |
+|-------|----------|--------|
+| Duplicate diagnosis | Event `c508fb3f-fcf0-4fe8-abb5-dcb895326f6a` completed twice for work item `189466` | CONFIRMED |
+| Python syntax | Python 3.12 `py_compile` and Pylance file syntax checks | PASS |
+| Duplicate regression | `test_duplicate_event_invokes_review_and_writeback_once` | PASS |
+| Failure retry regression | `test_failed_review_releases_event_for_retry` | PASS |
+| Worker recovery regression | `test_stale_processing_claim_is_recovered` | PASS |
+| Uncertain write regression | `test_uncertain_board_write_is_not_retried` | PASS |
+| Dependency resolution | `pip install --dry-run -r requirements.txt` | PASS |
+| Deployable build | Production dependencies installed and `function_app` imported | PASS |
+| Deployment package | `archdesignreview-idempotency-v2.zip`, 5,841 files, SHA-256 `4CFB9DD8519FE0BFFC90FAA7A1101296DE51ACF891F6958FCA806350907E12C1` | PASS |
+| Package roots | `function_app.py`, `host.json`, and `requirements.txt` only | PASS |
+| Function target | Existing `archdesignreview`, Running, Canada Central, HTTPS only | PASS |
+| Repository diff | `git diff --check` | PASS |
+| Function host configuration | Extension bundle `[4.*, 5.0.0)` | PASS |
+| Azure Policy visibility | 62 assignments at target resource-group scope | PASS |
+| Docker and IaC | No Dockerfile or infrastructure deployment | Not applicable |
+| Static RBAC | Existing connection-string access to Function host storage; no role or IaC changes | PASS |
+
+### Deployment proof
+
+| Check | Evidence | Result |
+|-------|----------|--------|
+| App setting | `REVIEW_IDEMPOTENCY_CONTAINER=architecture-review-events` | PASS |
+| Azure deployment | Deployment ID `93596420-3039-4c02-840f-30302628f6c5`, deployer `az_cli_functions`, status `4`, complete `true` | PASS |
+| Existing resource preserved | `archdesignreview`, Running, Canada Central, HTTPS only | PASS |
+| Function discovery | `archdesignreview/architecture_review` returned by the management API | PASS |
+| Live duplicate suppression | Pre-claimed event returned HTTP `200` and `status: ignored` with reason `already accepted` | PASS |
+| Side-effect prevention | Duplicate stopped before the parsed-request, Wiki-fetch, Foundry, and Board-write stages | PASS |
+| Application Insights | Correlation ID `idempotency-v2-live-smoke-20260922`, operation ID `d3d6328e7eae79a8ca0a7ed0ad923e49` | PASS |
+| Test cleanup | Synthetic event claim deleted after verification | PASS |
+| Live Function identity | Principal `761e98ac-6ff5-42b6-85c2-ebd397739c99` retained six role assignments | PASS |

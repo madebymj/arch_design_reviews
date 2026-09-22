@@ -117,7 +117,7 @@ The Function must reject malformed responses, preserve the raw response in the c
 - Keep Azure DevOps integration credentials in Key Vault if managed identity cannot be used for the selected Azure DevOps API flow.
 - Restrict Wiki and Board permissions to the required project and paths.
 - Use private endpoints, private DNS, and controlled egress where the hosting topology supports them.
-- Add idempotency using the event ID and source revision so duplicate events do not create duplicate reviews.
+- Atomically claim each Azure DevOps event ID in Function host storage before starting a review. Ignore concurrent or completed duplicates, recover processing claims older than ten minutes, and retain an explicit marker after an uncertain Board write.
 - Do not allow the agent to write directly to Azure DevOps or deploy resources. The Function validates and routes its output.
 - Require a human architecture approver for final approval and for any exception to a Critical or High finding.
 - Log correlation ID, source revision, agent version, prompt/instruction version, result hash, and decision transition without logging secrets or sensitive design data unnecessarily.

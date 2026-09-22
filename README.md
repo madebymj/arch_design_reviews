@@ -269,6 +269,7 @@ The Function uses these application settings.
 | `AZURE_DEVOPS_ORG_URL` | Yes | Azure DevOps organization URL | No |
 | `AZURE_DEVOPS_ALLOWED_PROJECTS` | Yes | Comma-separated list of projects allowed for Wiki reads and Board writeback | No |
 | `REVIEW_TRIGGER_TAG` | Yes | Newly added tag that starts a review; use `design review` | No |
+| `REVIEW_IDEMPOTENCY_CONTAINER` | Yes | Blob container for atomic Azure DevOps event claims; use `architecture-review-events` | No |
 | `AZURE_DEVOPS_PAT` | Yes in current implementation | Reads Wiki and updates Board history | Yes |
 | `AZURE_STORAGE_BLOB_ENDPOINT` | Optional | Snapshot storage account endpoint | No |
 | `REVIEW_SNAPSHOT_CONTAINER` | Optional | Input/output snapshot container | No |
@@ -671,29 +672,26 @@ Checks:
 
 ### 9.9 Duplicate reviews
 
-The current implementation can process the same design more than once if Azure DevOps delivers multiple matching events.
-
 Current controls:
 
 - The service hook requires the `design review` tag and filters updates to the `Tags` field.
 - The Function accepts only the event that newly adds `REVIEW_TRIGGER_TAG`.
 - A history-only update does not change tags and therefore does not trigger the service hook.
-
-Planned code control:
-
-- Store `work-item ID + Wiki revision`, or event ID, as an idempotency key.
-- Skip a request when the same key was already completed.
+- The Function atomically stores a SHA-256-keyed event claim in the existing Function host storage before Wiki retrieval.
+- Concurrent or later delivery of the same Azure DevOps event ID returns HTTP `200` with `status: ignored`.
+- A processing claim becomes recoverable after ten minutes so a worker termination cannot suppress the event forever.
+- A failure before Board writeback releases its claim so Azure DevOps can retry it. A successful review retains a completed claim.
+- An uncertain Board write failure retains a failure marker, preventing an automatic retry from creating a second comment.
 
 ## 10. Known limitations and follow-up work
 
-1. Persistent idempotency is not implemented yet.
-2. The Azure DevOps integration currently uses a PAT rather than workload identity.
-3. The PAT should be supplied through a Key Vault reference in Azure.
-4. Search roles on the Function identity should be removed after the agent-only retrieval path is verified; contributor roles on Foundry identities should be reviewed for least privilege.
-5. Linked Wiki attachments are not yet downloaded; the review package currently sends an empty attachments list.
-6. Snapshot storage is optional and silently skipped with an informational log when not configured.
-7. The quality of guidance retrieval now depends on the agent's Search knowledge/MCP connection and its compliance with the retrieval requirements in the review package.
-8. A direct Azure DevOps MCP tool is available in Foundry, but the Function still reads the Wiki and writes the Board through Azure DevOps REST APIs. MCP adoption should be a controlled future change, not assumed current behavior.
+1. The Azure DevOps integration currently uses a PAT rather than workload identity.
+2. The PAT should be supplied through a Key Vault reference in Azure.
+3. Search roles on the Function identity should be removed after the agent-only retrieval path is verified; contributor roles on Foundry identities should be reviewed for least privilege.
+4. Linked Wiki attachments are not yet downloaded; the review package currently sends an empty attachments list.
+5. Snapshot storage is optional and silently skipped with an informational log when not configured.
+6. The quality of guidance retrieval now depends on the agent's Search knowledge/MCP connection and its compliance with the retrieval requirements in the review package.
+7. A direct Azure DevOps MCP tool is available in Foundry, but the Function still reads the Wiki and writes the Board through Azure DevOps REST APIs. MCP adoption should be a controlled future change, not assumed current behavior.
 
 ## 11. Repository structure
 
