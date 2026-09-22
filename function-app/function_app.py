@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 WIKI_URL_PATTERN = re.compile(r"/_wiki/wikis/([^/]+)(?:/([^?#]+))?", re.IGNORECASE)
 EVENT_CLAIM_STALE_AFTER = timedelta(minutes=10)
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MAX_WIKI_IMAGES = 10
+MAX_WIKI_IMAGE_BYTES = 15 * 1024 * 1024
+MAX_WIKI_IMAGES_TOTAL_BYTES = 50 * 1024 * 1024
 
 
 class IgnoredEvent(Exception):
@@ -52,6 +56,14 @@ class Finding(BaseModel):
     evidence: list[str] = Field(default_factory=list)
 
 
+class DiagramAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    imageName: str
+    summary: str
+    issues: list[str] = Field(default_factory=list)
+
+
 class ReviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -61,6 +73,7 @@ class ReviewResult(BaseModel):
     overallRisk: str
     recommendation: str
     findings: list[Finding] = Field(default_factory=list)
+    diagramAssessments: list[DiagramAssessment] = Field(default_factory=list)
     missingInformation: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
 
@@ -73,10 +86,18 @@ class ReviewRequest(BaseModel):
     trigger_tag: str
 
 
+class WikiImage(BaseModel):
+    name: str
+    source_path: str
+    media_type: str
+    content: bytes
+
+
 class WikiDocument(BaseModel):
     content: str
     revision: str
     url: str
+    images: list[WikiImage] = Field(default_factory=list)
 
 
 class WikiReference(BaseModel):
@@ -108,10 +129,22 @@ def architecture_review(req: func.HttpRequest) -> func.HttpResponse:
             request.wiki_url,
         )
         wiki = get_wiki_document(request.wiki_url)
-        logger.info("Wiki document fetched: revision=%s length=%d", wiki.revision, len(wiki.content))
+        logger.info(
+            "Wiki document fetched: revision=%s length=%d images=%d image_bytes=%d",
+            wiki.revision,
+            len(wiki.content),
+            len(wiki.images),
+            sum(len(image.content) for image in wiki.images),
+        )
         package = build_review_package(request, wiki)
         save_snapshot(request.event_id, "input.json", package)
-        result = invoke_foundry(package)
+        result = invoke_foundry(package, wiki.images)
+        logger.info(
+            "Foundry review returned: review_id=%s findings=%d diagram_assessments=%d",
+            result.reviewId,
+            len(result.findings),
+            len(result.diagramAssessments),
+        )
         save_snapshot(request.event_id, "result.json", result.model_dump())
         board_update_started = True
         update_board(request.devops_project, request.work_item_id, result)
@@ -289,7 +322,78 @@ def get_wiki_document(wiki_url: str) -> WikiDocument:
     if not content:
         raise ValueError("The Wiki page has no content")
     revision = response.headers.get("ETag", data.get("eTag", "unknown")).strip('"')
-    return WikiDocument(content=content, revision=revision, url=wiki_url)
+    images = get_wiki_images(wiki, content)
+    return WikiDocument(content=content, revision=revision, url=wiki_url, images=images)
+
+
+def get_wiki_images(wiki: WikiReference, content: str) -> list[WikiImage]:
+    image_paths = extract_wiki_png_paths(content)
+    if len(image_paths) > MAX_WIKI_IMAGES:
+        raise ValueError(f"The Wiki page contains {len(image_paths)} PNG images; the maximum is {MAX_WIKI_IMAGES}")
+
+    images: list[WikiImage] = []
+    total_bytes = 0
+    for source_path in image_paths:
+        image = download_wiki_png(wiki, source_path)
+        total_bytes += len(image.content)
+        if total_bytes > MAX_WIKI_IMAGES_TOTAL_BYTES:
+            raise ValueError(
+                f"The Wiki PNG images exceed the {MAX_WIKI_IMAGES_TOTAL_BYTES // (1024 * 1024)} MB total limit"
+            )
+        images.append(image)
+    return images
+
+
+def extract_wiki_png_paths(content: str) -> list[str]:
+    references = re.findall(r"!\[[^\]]*\]\(\s*<?([^)\s>]+\.png(?:\?[^)\s>]*)?)>?(?:\s+[^)]*)?\)", content, re.IGNORECASE)
+    references.extend(re.findall(r"<img[^>]+src=[\"']([^\"']+\.png(?:\?[^\"']*)?)[\"']", content, re.IGNORECASE))
+
+    paths: list[str] = []
+    for reference in references:
+        parsed = urlparse(html.unescape(reference))
+        source_path = unquote(parsed.path)
+        if not source_path.startswith("/.attachments/"):
+            raise ValueError(f"Unsupported PNG reference '{reference}'; use a Wiki attachment")
+        if source_path not in paths:
+            paths.append(source_path)
+    return paths
+
+
+def download_wiki_png(wiki: WikiReference, source_path: str) -> WikiImage:
+    api_url = (
+        f"{os.environ['AZURE_DEVOPS_ORG_URL'].rstrip('/')}/{quote(wiki.project, safe='')}"
+        f"/_apis/git/repositories/{quote(wiki.wiki_id, safe='')}/items"
+    )
+    response = requests.get(
+        api_url,
+        params={"path": source_path, "includeContent": "true", "api-version": "7.1"},
+        headers=devops_headers(),
+        timeout=30,
+        stream=True,
+    )
+    response.raise_for_status()
+
+    declared_length = response.headers.get("Content-Length")
+    if declared_length and int(declared_length) > MAX_WIKI_IMAGE_BYTES:
+        raise ValueError(f"Wiki image '{source_path}' exceeds the {MAX_WIKI_IMAGE_BYTES // (1024 * 1024)} MB limit")
+
+    chunks: list[bytes] = []
+    downloaded = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        downloaded += len(chunk)
+        if downloaded > MAX_WIKI_IMAGE_BYTES:
+            raise ValueError(f"Wiki image '{source_path}' exceeds the {MAX_WIKI_IMAGE_BYTES // (1024 * 1024)} MB limit")
+        chunks.append(chunk)
+
+    image_content = b"".join(chunks)
+    if not image_content.startswith(PNG_SIGNATURE):
+        raise ValueError(f"Wiki image '{source_path}' is not a valid PNG")
+    return WikiImage(
+        name=source_path.rsplit("/", 1)[-1],
+        source_path=source_path,
+        media_type="image/png",
+        content=image_content,
+    )
 
 
 def build_review_package(request: ReviewRequest, wiki: WikiDocument) -> dict[str, Any]:
@@ -299,7 +403,19 @@ def build_review_package(request: ReviewRequest, wiki: WikiDocument) -> dict[str
         "wikiUrl": wiki.url,
         "boardItemId": request.work_item_id,
         "azureDevOpsProject": request.devops_project,
-        "design": {"content": wiki.content, "attachments": []},
+        "design": {
+            "content": wiki.content,
+            "attachments": [
+                {
+                    "name": image.name,
+                    "sourcePath": image.source_path,
+                    "mediaType": image.media_type,
+                    "sizeBytes": len(image.content),
+                    "includedAsVisionInput": True,
+                }
+                for image in wiki.images
+            ],
+        },
         "guidanceRetrieval": {
             "owner": "foundry-agent",
             "useConfiguredKnowledgeTool": True,
@@ -315,9 +431,22 @@ def build_review_package(request: ReviewRequest, wiki: WikiDocument) -> dict[str
             ],
             "requirements": [
                 "Review the complete design before choosing search queries.",
+                "Review every supplied architecture diagram as a high-detail vision input.",
+                "Compare each diagram with the written design and report omissions, contradictions, insecure flows, and architectural errors.",
                 "Use focused searches for each applicable review domain.",
                 "Ground every finding in retrieved guidance or explicit design evidence.",
                 "Include the relevant source or design section in each finding's evidence.",
+            ],
+        },
+        "diagramReview": {
+            "required": bool(wiki.images),
+            "requiredImages": [image.name for image in wiki.images],
+            "requirements": [
+                "Visually inspect every supplied image.",
+                "Compare every diagram with the written design.",
+                "Identify incorrect or missing components, trust boundaries, network flows, security controls, dependencies, and failure paths.",
+                "Return exactly one diagramAssessments entry for every required image, using the exact imageName.",
+                "Use an empty issues list only when no diagram issue is found.",
             ],
         },
         "constraints": {
@@ -328,21 +457,43 @@ def build_review_package(request: ReviewRequest, wiki: WikiDocument) -> dict[str
     }
 
 
-def invoke_foundry(package: dict[str, Any]) -> ReviewResult:
+def invoke_foundry(package: dict[str, Any], images: list[WikiImage] | None = None) -> ReviewResult:
     endpoint = os.environ["AZURE_AI_PROJECT_ENDPOINT"]
     agent_name = os.environ["FOUNDRY_AGENT_NAME"]
     project_client = AIProjectClient(endpoint=endpoint, credential=DefaultAzureCredential(), allow_preview=True)
     openai_client = project_client.get_openai_client(agent_name=agent_name)
-    response = openai_client.responses.create(
-        input=json.dumps(package),
-    )
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": json.dumps(package)}]
+    for image in images or []:
+        encoded_image = base64.b64encode(image.content).decode("ascii")
+        content.append(
+            {
+                "type": "input_image",
+                "image_url": f"data:{image.media_type};base64,{encoded_image}",
+                "detail": "high",
+            }
+        )
+    response = openai_client.responses.create(input=[{"role": "user", "content": content}])
     output_text = getattr(response, "output_text", None)
     if not output_text:
         raise ValueError("Foundry agent returned no text output")
     try:
-        return ReviewResult.model_validate(json.loads(strip_code_fences(output_text)))
+        result = ReviewResult.model_validate(json.loads(strip_code_fences(output_text)))
     except (json.JSONDecodeError, ValidationError) as error:
         raise ValueError(f"Foundry agent returned invalid review JSON: {error}") from error
+    validate_diagram_assessments(result, images or [])
+    return result
+
+
+def validate_diagram_assessments(result: ReviewResult, images: list[WikiImage]) -> None:
+    required_names = {image.name for image in images}
+    returned_names = {assessment.imageName for assessment in result.diagramAssessments}
+    if returned_names != required_names:
+        missing = sorted(required_names - returned_names)
+        unexpected = sorted(returned_names - required_names)
+        raise ValueError(
+            f"Foundry agent diagram assessments do not match the supplied images; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
 
 
 def save_snapshot(event_id: str, name: str, value: dict[str, Any]) -> None:
@@ -495,8 +646,21 @@ def format_review_history(result: ReviewResult) -> str:
         f"{details if details else '<p>No detailed findings.</p>'}"
         "<h3>Missing information</h3>"
         f"{format_html_list(result.missingInformation, 'No missing information identified.')}"
+        "<h3>Diagram assessments</h3>"
+        f"{format_diagram_assessments(result.diagramAssessments)}"
         "<h3>Assumptions</h3>"
         f"{format_html_list(result.assumptions, 'No assumptions returned.')}"
+    )
+
+
+def format_diagram_assessments(assessments: list[DiagramAssessment]) -> str:
+    if not assessments:
+        return "<p>No diagrams were supplied for review.</p>"
+    return "".join(
+        f"<h4>{html.escape(assessment.imageName)}</h4>"
+        f"<p>{html.escape(assessment.summary)}</p>"
+        f"{format_html_list(assessment.issues, 'No diagram-specific issues identified.')}"
+        for assessment in assessments
     )
 
 

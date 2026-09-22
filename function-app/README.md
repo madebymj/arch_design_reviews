@@ -4,6 +4,8 @@ This Azure Functions app receives an authenticated Azure Boards event, reads the
 
 The Function never edits the Wiki design page.
 
+Embedded Azure DevOps Wiki PNG attachments are downloaded from the Wiki Git repository and sent to the Foundry agent as high-detail vision inputs. The Function requires the response to contain exactly one named diagram assessment for every supplied PNG. Limits are 10 PNGs, 15 MB per image, and 50 MB total. Missing, invalid, external, or oversized PNG references fail the review explicitly instead of being silently skipped.
+
 ## Local setup
 
 1. Copy `local.settings.example.json` to `local.settings.json`.

@@ -41,7 +41,7 @@ The source Mermaid diagram is [../diagrams/design-review-approval-flow.mmd](../d
 | Existing Azure DevOps Wiki | Authoritative location for the design draft, diagrams, decisions, and assumptions. The architect manually updates the existing page. Automation must not edit the design page or write findings to it. |
 | Existing Azure Boards project | Tracks review state, owner, due dates, findings, approvals, and the link to the Wiki design page. The designer creates the review item after finalizing the design revision. |
 | Azure DevOps Service Hook | Emits the Board-item-created or submitted event that starts the review. A Wiki edit alone does not start a review. |
-| Azure Function | Authenticates the event, reads the source documents, validates and normalizes the review package, invokes Foundry, validates the response, and updates the Board. It does not edit the Wiki. |
+| Azure Function | Authenticates the event, reads the source documents and embedded Wiki PNGs, validates and normalizes the review package, invokes Foundry with text and high-detail vision inputs, validates the response, and updates the Board. It does not edit the Wiki. |
 | Blob Storage | Keeps immutable, versioned input and output snapshots for traceability and replay. |
 | Existing Microsoft Foundry project and new review agent | The Foundry project already exists. A dedicated architecture-review agent reads the complete design, runs focused queries through its configured Azure AI Search knowledge tool, and produces structured findings against CAF, WAF, Azure principles, security, reliability, cost, governance, and operations. |
 | Azure AI Search | Stores curated guidance. The Foundry agent, not the Function, retrieves relevant guidance after reviewing the complete design. |
@@ -54,9 +54,9 @@ The source Mermaid diagram is [../diagrams/design-review-approval-flow.mmd](../d
 
 1. **Draft**: The requester and architect write or update the design on the existing Azure DevOps Wiki page.
 2. **Ready for review**: The designer finishes a revision and creates a linked Board item containing the Wiki URL, page path, owner, scope, and requested review date.
-3. **In review**: The Board service hook starts the Function. The Function retrieves the exact Wiki revision and linked artifacts.
+3. **In review**: The Board service hook starts the Function. The Function retrieves the exact Wiki revision and every embedded PNG attachment.
 4. **Normalized**: The Function validates required fields, removes unsupported content, records the source revision, and creates a versioned review package.
-5. **Agent review**: The Foundry agent reads the complete design, retrieves targeted guidance through its configured Search knowledge tool for every applicable review domain, and evaluates the design.
+5. **Agent review**: The Foundry agent reads the complete design, visually inspects every supplied PNG, compares each diagram with the written design, retrieves targeted guidance through its configured Search knowledge tool, and evaluates the design.
 6. **Findings recorded**: The Function validates the agent response and writes findings, severity, evidence links, and the recommendation to the Board item only.
 7. **Architect revision**: The architect reviews the Board findings, manually updates the existing Wiki design page, and resubmits a Board item containing the new Wiki revision.
 8. **Decision pending**: An authorized human reviews the updated design and Board findings.
@@ -72,7 +72,7 @@ The Function should send the agent a bounded package containing:
 - Business requirements and success criteria.
 - Functional and non-functional requirements, including CIA, RPO, and RTO.
 - Architecture decisions and assumptions.
-- Architecture diagram source and rendered references.
+- Architecture diagram source plus the actual embedded PNG images as high-detail vision inputs.
 - Subscription, management group, region, networking, identity, data, integration, and operational details.
 - Cost and sizing assumptions.
 - CAF checklist results and WAF checklist results.
@@ -80,7 +80,7 @@ The Function should send the agent a bounded package containing:
 - Explicit instruction that the agent recommends a decision but does not approve or deploy.
 - Explicit instruction that the agent must retrieve targeted guidance for each applicable review domain and cite guidance or design evidence for every finding.
 
-The package must exclude secrets, access tokens, unnecessary personal data, and raw credentials. Large attachments should be referenced or summarized rather than blindly included in the prompt.
+The package must exclude secrets, access tokens, unnecessary personal data, and raw credentials. PNG inputs are bounded to 10 images, 15 MB per image, and 50 MB total. Other attachment types are not included.
 
 ## Agent output contract
 
@@ -101,6 +101,13 @@ The Foundry agent should return machine-readable JSON with at least:
       "impact": "string",
       "recommendation": "string",
       "evidence": ["string"]
+    }
+  ],
+  "diagramAssessments": [
+    {
+      "imageName": "exact-supplied-file-name.png",
+      "summary": "string",
+      "issues": ["string"]
     }
   ],
   "missingInformation": ["string"],

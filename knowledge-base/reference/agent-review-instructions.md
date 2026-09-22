@@ -31,6 +31,7 @@ This document provides a set of instructions for utilizing the Copilot feature t
 - Azure DevOps Wiki and Boards are the source systems for the draft, review state, ownership, and approval evidence.
 - An authenticated Azure Boards work-item event invokes the orchestration layer, currently modeled as an Azure Function. A Wiki edit alone does not trigger a review.
 - The Function retrieves the exact Wiki revision, linked attachments, and Board work item; normalizes them into a bounded review package; and invokes the Azure AI Foundry review agent.
+- Every embedded Wiki PNG must be downloaded and supplied as a high-detail vision input. The agent must visually assess every supplied diagram and compare it with the written design.
 - The Azure AI Foundry project already exists; create the architecture-review agent inside that project.
 - The Function sends the complete design to the agent without selecting guidance from only part of the document. The agent must review the complete design, run focused searches through its configured Azure AI Search knowledge tool for every applicable review domain, and cite retrieved guidance or explicit design evidence for every finding.
 - The Function validates the structured agent response and updates the Board with findings and links. It must not modify the Wiki design page.

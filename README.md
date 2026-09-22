@@ -146,12 +146,15 @@ The Function:
 - Requires an event ID, work-item ID, and valid Azure DevOps Wiki URL
 - Supports Wiki URLs containing either a page path or a numeric page ID
 - Reads Wiki content through the Azure DevOps REST API
+- Detects every embedded Azure DevOps Wiki PNG attachment and downloads the actual image from the Wiki Git repository
+- Sends the complete Wiki text and PNG diagrams to the Foundry agent as high-detail vision inputs
 - Captures the Wiki `ETag` as the source revision
 - Builds a bounded review package
 - Tells the agent to use its configured knowledge tool for focused searches across all review domains
 - Saves input and output snapshots when Blob Storage is configured
 - Invokes the named Foundry agent
 - Validates the returned JSON with strict Pydantic models
+- Requires one named diagram assessment for every supplied PNG
 - Escapes agent content before producing HTML
 - Adds the HTML result to `System.History` on the Board item
 - Logs a correlation ID and the major processing stages
@@ -688,8 +691,8 @@ Current controls:
 1. The Azure DevOps integration currently uses a PAT rather than workload identity.
 2. The PAT should be supplied through a Key Vault reference in Azure.
 3. Search roles on the Function identity should be removed after the agent-only retrieval path is verified; contributor roles on Foundry identities should be reviewed for least privilege.
-4. Linked Wiki attachments are not yet downloaded; the review package currently sends an empty attachments list.
-5. Snapshot storage is optional and silently skipped with an informational log when not configured.
+4. Vision review currently supports embedded PNG attachments only, with a maximum of 10 images, 15 MB per image, and 50 MB total.
+5. Snapshot storage is optional and silently skipped with an informational log when not configured. Image bytes are sent to Foundry but are not included in the JSON snapshots.
 6. The quality of guidance retrieval now depends on the agent's Search knowledge/MCP connection and its compliance with the retrieval requirements in the review package.
 7. A direct Azure DevOps MCP tool is available in Foundry, but the Function still reads the Wiki and writes the Board through Azure DevOps REST APIs. MCP adoption should be a controlled future change, not assumed current behavior.
 

@@ -422,3 +422,72 @@ The Function code no longer uses Search directly. The Search assignments were de
 | Application Insights | Correlation ID `idempotency-v2-live-smoke-20260922`, operation ID `d3d6328e7eae79a8ca0a7ed0ad923e49` | PASS |
 | Test cleanup | Synthetic event claim deleted after verification | PASS |
 | Live Function identity | Principal `761e98ac-6ff5-42b6-85c2-ebd397739c99` retained six role assignments | PASS |
+
+---
+
+## 13. Wiki diagram vision review
+
+**Goal:** Include embedded Azure DevOps Wiki PNG diagrams in the same architecture review as the written design.
+
+**Implementation:**
+
+- Extract embedded `/.attachments/*.png` references from Wiki Markdown and HTML.
+- Download each PNG from the approved Wiki Git repository using the existing Azure DevOps credential.
+- Reject external, missing, invalid, oversized, or excessive PNG inputs instead of silently skipping them.
+- Send the complete design text and every PNG to the `gpt-4.1` Foundry agent as high-detail vision inputs.
+- Require exactly one `diagramAssessments` entry for every supplied filename.
+- Show diagram summaries and issues in the formatted Board result.
+
+**Limits:** 10 PNGs, 15 MB per image, and 50 MB total.
+
+**Foundry agent:** Version `7` is active with the existing `gpt-4.1` model and two existing tools. Its response contract now requires a named assessment for every supplied diagram.
+
+**Validation checklist:**
+
+- [x] Python and Pylance syntax checks pass.
+- [x] PNG extraction, validation, download, request construction, and response validation tests pass.
+- [x] Existing idempotency tests pass.
+- [x] The live Wiki page yields four PNGs through the Azure DevOps Git Items API.
+- [x] A non-writing Foundry test returns one assessment for each of the four exact filenames.
+- [x] Production dependencies install and the deployment package imports.
+- [x] The package excludes tests, local settings, caches, and documentation.
+
+**Deployment checklist:**
+
+- [x] Deploy the validated image-aware package to the existing `archdesignreview` Function App.
+- [x] Confirm Function discovery, running state, HTTPS-only status, and unchanged identity.
+- [x] Verify a Board-safe live request downloads four PNGs and completes the agent review.
+- [x] Verify Application Insights records image count, total image bytes, and review completion.
+
+### Validation proof
+
+| Check | Evidence | Result |
+|-------|----------|--------|
+| Python syntax | Python 3.12 `py_compile` and Pylance file syntax checks | PASS |
+| Unit tests | 9 tests covering idempotency and Wiki PNG handling | PASS |
+| Live Wiki images | Page `7521` returned four `/.attachments/*.png` references | PASS |
+| Image download | Azure DevOps Git Items API returned PNG content; live total 1,472,078 bytes | PASS |
+| Foundry model | Agent version `7`, model `gpt-4.1`, two existing tools | PASS |
+| Vision invocation | Four images sent as `input_image` with `detail=high` | PASS |
+| Diagram contract | Four exact input filenames matched four returned `diagramAssessments` entries | PASS |
+| Board safety | Live vision tests used work item `0` and bypassed Board writeback | PASS |
+| Deployable build | Production dependencies installed and `function_app` imported | PASS |
+| Deployment package | `archdesignreview-vision-v2.zip`, 5,841 files, SHA-256 `D67C5B92D34CDC5EBA30BFFCBAA57D413764EDD411CC55B2A3CD6188D0A41822` | PASS |
+| Package roots | `function_app.py`, `host.json`, and `requirements.txt` only | PASS |
+| Existing target | Running, Canada Central, HTTPS only, identity unchanged | PASS |
+| Azure Policy visibility | 62 assignments at target resource-group scope | PASS |
+| Infrastructure | No resource, role, dependency-manifest, or infrastructure changes | PASS |
+
+### Deployment proof
+
+| Check | Evidence | Result |
+|-------|----------|--------|
+| Azure deployment | Deployment ID `2badb5a1-faef-4c8b-98f5-16f665a496a5`, deployer `az_cli_functions`, status `4`, complete `true` | PASS |
+| Existing resource preserved | `archdesignreview`, Running, HTTPS only, system-assigned identity unchanged | PASS |
+| Function discovery | `archdesignreview/architecture_review` returned by the management API | PASS |
+| Live Wiki retrieval | Revision `916dbadbd1e5f7f3e8a7e43c67ca444ea24a1c35`, 65,431 characters | PASS |
+| Live diagram retrieval | Four PNGs downloaded, totaling 1,472,078 bytes | PASS |
+| Foundry vision result | Eight findings and four diagram assessments returned | PASS |
+| Application Insights | Correlation ID `vision-final-smoke-20260922-2028`, operation ID `12d942447c7a97194789f7555a9a12b4` | PASS |
+| Board safety | Request used nonexistent work item `-1`; expected HTTP `502` occurred only at the final Board PATCH | PASS |
+| Test cleanup | Both synthetic vision-test event claims were deleted | PASS |
