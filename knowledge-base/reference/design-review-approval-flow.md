@@ -101,7 +101,7 @@ The Foundry agent should return machine-readable JSON with at least:
   ],
   "diagramAssessments": [
     {
-      "imageName": "exact-supplied-file-name.png",
+      "imageName": "Wiki image caption, alt text, or preceding heading",
       "summary": "string",
       "issues": ["string"]
     }

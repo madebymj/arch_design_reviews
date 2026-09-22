@@ -491,3 +491,33 @@ The Function code no longer uses Search directly. The Search assignments were de
 | Application Insights | Correlation ID `vision-final-smoke-20260922-2028`, operation ID `12d942447c7a97194789f7555a9a12b4` | PASS |
 | Board safety | Request used nonexistent work item `-1`; expected HTTP `502` occurred only at the final Board PATCH | PASS |
 | Test cleanup | Both synthetic vision-test event claims were deleted | PASS |
+
+---
+
+## 14. Diagram display-name update
+
+**Goal:** Show the Wiki image caption or HTML alt text in each diagram assessment instead of an Azure DevOps-generated attachment filename.
+
+### Validation proof
+
+| Check | Evidence | Result |
+|-------|----------|--------|
+| Caption parsing | Regression input `SAP Management Servers - Prod Environment` maps to the expected display name while retaining the original attachment path | PASS |
+| PNG behavior | Markdown and HTML image extraction, deduplication, validation, download, and high-detail Foundry input tests | PASS |
+| Unit tests | 10 tests covering idempotency, Wiki PNG handling, and human-readable diagram names | PASS |
+| Pylance syntax | `function_app.py` and `test_wiki_images.py` | PASS |
+| Build verification | Production `function_app` import | PASS |
+| Repository diff | `git diff --check` | PASS |
+| Static RBAC | No infrastructure, identity, role-assignment, or application-setting changes | PASS |
+
+### Deployment proof
+
+| Check | Evidence | Result |
+|-------|----------|--------|
+| Deployment package | `archdesignreview-diagram-names.zip`, SHA-256 `BC0CC271AB0D5BDD455A284E87C11CE2543340D19EF4A2363542A01384BD4871` | PASS |
+| Azure deployment | Deployment ID `2e9b37a7-e955-4309-8235-2aab3da0d052`, status `4`, complete `true` | PASS |
+| Live Wiki names | Four diagram headings resolved, including `SAP Management Servers - Prod Environment` | PASS |
+| Foundry review | Six findings and four exact diagram assessments returned | PASS |
+| Application Insights | Operation ID `8eefd8498cafe17fb9477656a8394676` | PASS |
+| Board safety | Smoke test used nonexistent work item `-1`; expected failure occurred only at final Board write | PASS |
+| Test cleanup | Both synthetic diagram-name event claims were deleted | PASS |

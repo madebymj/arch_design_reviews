@@ -154,7 +154,7 @@ The Function:
 - Saves input and output snapshots when Blob Storage is configured
 - Invokes the named Foundry agent
 - Validates the returned JSON with strict Pydantic models
-- Requires one named diagram assessment for every supplied PNG
+- Requires one named diagram assessment for every supplied PNG, using its Wiki caption, alt text, or immediately preceding heading as the display name
 - Escapes agent content before producing HTML
 - Adds the HTML result to `System.History` on the Board item
 - Logs a correlation ID and the major processing stages

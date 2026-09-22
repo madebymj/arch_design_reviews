@@ -17,6 +17,7 @@ from function_app import (
     build_review_package,
     download_wiki_png,
     extract_wiki_png_paths,
+    extract_wiki_png_references,
     invoke_foundry,
 )
 
@@ -45,6 +46,23 @@ class WikiImageTests(unittest.TestCase):
         self.assertEqual(
             extract_wiki_png_paths(content),
             ["/.attachments/architecture.png", "/.attachments/network flow.png"],
+        )
+        references = extract_wiki_png_references(content)
+        self.assertEqual(references[0].display_name, "Diagram")
+        self.assertEqual(references[1].display_name, "Network")
+
+    def test_uses_wiki_caption_as_diagram_name(self) -> None:
+        references = extract_wiki_png_references(
+            "###_SAP Management Servers - Prod Environment_\n\n"
+            "![image.png]"
+            "(/.attachments/image-de9592e9-efaf-4fca-9265-a8442cf6e5fb.png)"
+        )
+
+        self.assertEqual(len(references), 1)
+        self.assertEqual(references[0].display_name, "SAP Management Servers - Prod Environment")
+        self.assertEqual(
+            references[0].source_path,
+            "/.attachments/image-de9592e9-efaf-4fca-9265-a8442cf6e5fb.png",
         )
 
     def test_rejects_external_png_reference(self) -> None:

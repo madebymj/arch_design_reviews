@@ -93,6 +93,11 @@ class WikiImage(BaseModel):
     content: bytes
 
 
+class WikiImageReference(BaseModel):
+    display_name: str
+    source_path: str
+
+
 class WikiDocument(BaseModel):
     content: str
     revision: str
@@ -327,14 +332,16 @@ def get_wiki_document(wiki_url: str) -> WikiDocument:
 
 
 def get_wiki_images(wiki: WikiReference, content: str) -> list[WikiImage]:
-    image_paths = extract_wiki_png_paths(content)
-    if len(image_paths) > MAX_WIKI_IMAGES:
-        raise ValueError(f"The Wiki page contains {len(image_paths)} PNG images; the maximum is {MAX_WIKI_IMAGES}")
+    image_references = extract_wiki_png_references(content)
+    if len(image_references) > MAX_WIKI_IMAGES:
+        raise ValueError(
+            f"The Wiki page contains {len(image_references)} PNG images; the maximum is {MAX_WIKI_IMAGES}"
+        )
 
     images: list[WikiImage] = []
     total_bytes = 0
-    for source_path in image_paths:
-        image = download_wiki_png(wiki, source_path)
+    for reference in image_references:
+        image = download_wiki_png(wiki, reference.source_path, reference.display_name)
         total_bytes += len(image.content)
         if total_bytes > MAX_WIKI_IMAGES_TOTAL_BYTES:
             raise ValueError(
@@ -345,21 +352,70 @@ def get_wiki_images(wiki: WikiReference, content: str) -> list[WikiImage]:
 
 
 def extract_wiki_png_paths(content: str) -> list[str]:
-    references = re.findall(r"!\[[^\]]*\]\(\s*<?([^)\s>]+\.png(?:\?[^)\s>]*)?)>?(?:\s+[^)]*)?\)", content, re.IGNORECASE)
-    references.extend(re.findall(r"<img[^>]+src=[\"']([^\"']+\.png(?:\?[^\"']*)?)[\"']", content, re.IGNORECASE))
+    return [reference.source_path for reference in extract_wiki_png_references(content)]
 
-    paths: list[str] = []
-    for reference in references:
-        parsed = urlparse(html.unescape(reference))
+
+def extract_wiki_png_references(content: str) -> list[WikiImageReference]:
+    raw_references: list[tuple[int, str, str]] = [
+        (match.start(), match.group(1), match.group(2))
+        for match in re.finditer(
+            r"!\[([^\]]*)\]\(\s*<?([^)\s>]+\.png(?:\?[^)\s>]*)?)>?(?:\s+[^)]*)?\)",
+            content,
+            re.IGNORECASE,
+        )
+    ]
+    for match in re.finditer(r"<img\b[^>]*>", content, re.IGNORECASE):
+        image_tag = match.group(0)
+        source_match = re.search(r"\bsrc=[\"']([^\"']+\.png(?:\?[^\"']*)?)[\"']", image_tag, re.IGNORECASE)
+        if not source_match:
+            continue
+        alt_match = re.search(r"\balt=[\"']([^\"']*)[\"']", image_tag, re.IGNORECASE)
+        raw_references.append((match.start(), alt_match.group(1) if alt_match else "", source_match.group(1)))
+
+    references: list[WikiImageReference] = []
+    used_paths: set[str] = set()
+    used_names: set[str] = set()
+    for position, raw_display_name, raw_source in sorted(raw_references):
+        parsed = urlparse(html.unescape(raw_source))
         source_path = unquote(parsed.path)
         if not source_path.startswith("/.attachments/"):
-            raise ValueError(f"Unsupported PNG reference '{reference}'; use a Wiki attachment")
-        if source_path not in paths:
-            paths.append(source_path)
-    return paths
+            raise ValueError(f"Unsupported PNG reference '{raw_source}'; use a Wiki attachment")
+        if source_path in used_paths:
+            continue
+
+        fallback_name = source_path.rsplit("/", 1)[-1]
+        base_display_name = get_wiki_image_display_name(content, position, raw_display_name, fallback_name)
+        display_name = base_display_name
+        suffix = 2
+        while display_name.casefold() in used_names:
+            display_name = f"{base_display_name} ({suffix})"
+            suffix += 1
+
+        references.append(WikiImageReference(display_name=display_name, source_path=source_path))
+        used_paths.add(source_path)
+        used_names.add(display_name.casefold())
+    return references
 
 
-def download_wiki_png(wiki: WikiReference, source_path: str) -> WikiImage:
+def get_wiki_image_display_name(content: str, position: int, raw_display_name: str, fallback_name: str) -> str:
+    display_name = html.unescape(raw_display_name).strip()
+    if display_name.casefold() not in {"", "image", "image.png"}:
+        return display_name
+
+    preceding_lines = content[:position].splitlines()
+    for line in reversed(preceding_lines):
+        if not line.strip():
+            continue
+        heading = re.match(r"^\s{0,3}#{1,6}\s*_?\s*(.*?)\s*_?\s*$", line)
+        if heading:
+            heading_text = heading.group(1).strip().strip("_*").strip()
+            if heading_text:
+                return heading_text
+        break
+    return fallback_name
+
+
+def download_wiki_png(wiki: WikiReference, source_path: str, display_name: str | None = None) -> WikiImage:
     api_url = (
         f"{os.environ['AZURE_DEVOPS_ORG_URL'].rstrip('/')}/{quote(wiki.project, safe='')}"
         f"/_apis/git/repositories/{quote(wiki.wiki_id, safe='')}/items"
@@ -389,7 +445,7 @@ def download_wiki_png(wiki: WikiReference, source_path: str) -> WikiImage:
     if not image_content.startswith(PNG_SIGNATURE):
         raise ValueError(f"Wiki image '{source_path}' is not a valid PNG")
     return WikiImage(
-        name=source_path.rsplit("/", 1)[-1],
+        name=display_name or source_path.rsplit("/", 1)[-1],
         source_path=source_path,
         media_type="image/png",
         content=image_content,
