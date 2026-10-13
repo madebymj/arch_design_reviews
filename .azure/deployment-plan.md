@@ -4,6 +4,100 @@
 
 Generated: 2026-09-21
 
+## Pending experiment: Free Azure AI Search compatibility (2026-10-05)
+
+**Status:** Free Search is selected by the live Function; live review completed for work item 191291. Basic is retained but application access was revoked on 2026-10-05. Earlier evidence below describes the staged migration chronologically.
+
+**Goal:** Test a new Free Search service with the existing complete architecture-review workflow without replacing or deleting the working Basic service.
+
+**Preparation:** Inspect the existing index, knowledge sources/base, authentication, storage/vector usage, and agent tool configuration. Check Free-tier quota, regional availability and supported features before provisioning.
+
+**Isolation:** Use a separate Free service and test agent/connection. Do not redirect the live Function or service hooks without explicit approval. Confirm how to exercise the Function and a designated test Board work item without affecting normal reviews.
+
+**Validation:** Verify indexed guidance, retrieval and citations, full written design and all PNG assessments, structured-response validation and actual Azure Boards writeback. A successful Search query alone does not prove end-to-end compatibility.
+
+**Stop conditions:** Unsupported managed-identity/model connection, Free-tier limits, unavailable regional capacity, denied access or required unsafe changes. Report the exact blocker; do not silently change retrieval behavior.
+
+**Costs and cleanup:** Free Search capacity has no service charge; model/tool test invocations remain billable. Preserve Basic and do not delete test resources without approval.
+
+### Read-only preflight results
+
+- User confirmed subscription `f565124f-a0f3-4bde-b0e8-dcadc036868b` and West Europe.
+- Actual Basic Search location is West Europe; do not reuse the historical Canada Central location for Search.
+- Subscription resource listing returned one Search service (`archdesignreview`, Basic), with no existing Free service.
+- Current Search contains one index (`search-1789141789651`), 21 documents, 214,359 bytes of storage and zero vector-index bytes.
+- Existing knowledge source is `searchIndex`; knowledge base is `architecture-review-knowledge`, with `minimal` retrieval reasoning effort and a GPT-4.1 model connection.
+- Free compatibility is not yet proven. Index schema, semantic settings, source configuration and actual Free service retrieval must be tested.
+- Proposed sequence: provision isolated Free Search in West Europe; copy index schema/documents and compatible knowledge source/base; verify retrieval; create isolated test agent connection; exercise orchestrator with designated test Board item; verify citations, all diagram assessments and Board writeback.
+- Do not migrate the existing Blob indexer/skillset blindly: these are ingestion infrastructure, and Free outbound identity restrictions may require a different approved ingestion approach.
+- User approved the isolated sequence. Recipe: Azure CLI/REST, no changes to live Function or webhook. Test Search resource name: `archdesignreview-free-test`, resource group `rg-euw-nl-hq-s-sandbox`, subscription and region as confirmed above.
+- Pending: designated test work item / isolated Function execution method. No Azure resources have been created or modified.
+
+### Experiment validation checklist
+
+- All validation checks pass:
+  - Core validation: CLI authentication, AVM Bicep compilation, ARM validation and what-if for `infra/free-search-test.bicep`.
+  - Docker build: not applicable (no container or Function code deployment).
+  - Azure Policy validation: inspect inherited assignments and ARM validation result.
+  - Static role verification: template creates no RBAC assignments; Free uses no outbound managed identity.
+- Provision only the isolated Free resource; no live infrastructure changes.
+
+### Experiment validation proof (supplement to Section 7)
+
+- Shared `validate-deployment.ps1` completed with `OVERALL: PASS`: Azure CLI, authentication, AVM Bicep build, ARM validate and what-if.
+- What-if: two creates including nested deployment; actual service create is only `archdesignreview-free-test`, Free SKU, no identity. Zero modifications/deletions; existing Basic and Foundry resources are ignored.
+- Inherited policy enumeration returned 62 assignments; ARM validation passed applicable enforcement checks.
+- Editor Bicep diagnostics: no errors.
+- No application code changed; no Docker build required. Static template review: no role assignments, no managed identity, no secrets in template.
+
+### Experiment results (2026-10-05)
+
+- Deployment `architecture-review-free-test` succeeded; correlation ID `f0dfaafc-7155-4e45-bbab-29b1b91d7ff0`.
+- Free service `archdesignreview-free-test` in West Europe: provisioned successfully, semantic free enabled, dual API-key/Entra inbound auth.
+- Copied the existing index schema, all 21 retrievable guidance documents, search-index knowledge source and knowledge base. Indexer/data-source/skillset migration and automated ingestion are NOT tested.
+- Direct minimal-reasoning retrieval succeeded with five references; Search activity elapsed time 628 ms.
+- User approved granting project identity `becd02ce-f483-4423-bf76-1da69d839c60` Search Index Data Reader on the Free service only. Assignment verified.
+- Separate Foundry connection `architecture-review-free-test-v2` uses ProjectManagedIdentity with audience `https://search.azure.com`. An earlier test connection (`architecture-review-free-test`) remains; its initially missing audience caused failed invocations. No resources were deleted.
+- Test agent `architecture-review-agent-free-test`, version 3, retains the live model/output schema and has an explicit test instruction requiring the Free knowledge tool. A prior response without actual MCP calls was rejected by test instrumentation before writeback.
+- Designated Board item: 191251. Successful review ID: `board-191251-free-search-test-60d234e5-17e7-45f2-9913-bd956f13de92`.
+- Wiki revision: `fc3454242e4d1bffdee44aaf806bf45f276465fa`.
+- Verified result: seven findings, seven diagram assessments, overall risk High, valid structured response, successful `knowledge_base_retrieve` MCP call on `architecture-review-free-test-v2`, and Board history readback containing the review ID.
+- Total test handler time: 45.7 seconds (not a 30-second benchmark).
+- Execution boundary: local invocation of the unchanged Function handler with live configuration copied into process memory, only agent selection overridden locally, and a synthetic tag-added event. This is NOT a deployed HTTP webhook test; local caller identity differs from the deployed Function identity.
+- Live app setting `FOUNDRY_AGENT_NAME` remains `architecture-review-agent`; Basic service and webhook were not redirected. Item 191251 did not require the actual trigger tag for this isolated test.
+- Compatibility conclusion: Free can support the current small index and the tested design/retrieval/vision/validation/writeback path. Not yet proven: automatic content ingestion, sustained load, Free monthly semantic/retrieval quotas, or live webhook cutover. Retain Basic until any cutover is separately approved and verified.
+- Missing local Foundry tooling was installed to satisfy prerequisite checks: Azure Developer CLI and its Foundry extension/dependencies.
+
+### Requested live cutover preparation (2026-10-05)
+
+- User requested ingestion parity, a real Board-triggered test, and eventual Basic deletion only after success.
+- Copied Basic Blob datasource, language-detection/chunking skillset, and indexer into Free. Original indexer schedule is unset; Free also has no automatic schedule.
+- Approved authentication deviation: Free datasource uses read/list HTTPS container SAS for `archdesignreview1`, expiring 2026-11-04 11:38 UTC. Credential exists only in Search datasource; no credential persisted in source files.
+- Initial Free indexing reported success, no failures/warnings, 21 indexed chunks; full reset/run verification pending.
+- Free imposes a 180-second interval between on-demand indexer invocations; immediate rerun was rejected, not an authentication failure.
+- Live Function agent switch and Basic deletion still require explicit confirmation. No live cutover performed.
+- Full Free re-ingestion verified after the required interval: success, eight Blob documents processed, zero failures, zero errors/warnings; execution 2026-10-05 11:44:23-11:44:38 UTC. This proves actual Blob reads and skillset/index-projection processing, not just copied index content.
+- User explicitly approved live agent selection change. Function `FOUNDRY_AGENT_NAME` set to `architecture-review-agent-free-test` and verified by app-settings readback. Unauthenticated HTTP endpoint returned 401, confirming responsiveness and authentication enforcement.
+- Pending real webhook-triggered Board review. Basic is retained for rollback. Rollback setting: `FOUNDRY_AGENT_NAME=architecture-review-agent`. SAS expiry renewal is required before 2026-11-04.
+
+### Live review and Basic access isolation (2026-10-05)
+
+- Deployed Function completed review `board-191291-bf8f5816-e16b-4cc7-821a-d04773539e29`, operation `ef96a67f8ab0c1404a6b32db49cc9a66`, with seven findings and seven diagram assessments. Parsed request to completed findings took approximately 46 seconds; user confirmed successful Boards feedback.
+- User requested retaining Basic while cutting off access from Foundry and other resources, then explicitly approved disabling Basic API-key authentication in addition to RBAC removal.
+- Live Function selects `architecture-review-agent-free-test`; all three versions of that agent have only Free Search MCP endpoints. Latest version 3 uses connection `architecture-review-free-test-v2` with project managed identity.
+- Aligned the unused Function `AZURE_SEARCH_ENDPOINT` setting to `https://archdesignreview-free-test.search.windows.net`; the application code uses agent selection, not this endpoint setting.
+- Removed eleven direct Basic Search assignments: three each for Function `archdesignreview`, Foundry account `mpalanisandbox`, and Foundry project `firstProject` (Search Index Data Reader, Search Index Data Contributor, Search Service Contributor); one reader each for older workspace identities `platformaihub` and `firstplatformproject`.
+- Removed Basic Search identity's outbound Storage Blob Data Reader assignment on `rgeuwnlhqssandboxb86c`. Total removals: twelve. Non-sensitive assignment IDs, principals, role definitions and scopes are saved in the session artifact `basic-search-removed-roles-2026-10-05.json` for recovery.
+- Basic is still provisioned with Basic SKU and its data/connections retained. Verified zero direct role assignments on Basic, zero direct outbound roles for its managed identity, and `disableLocalAuth=true`. A Basic API-key document-count request returned HTTP 401.
+- Free project Search Index Data Reader assignment was preserved. Free document-count request returned HTTP 200 with 21 documents. Function endpoint remained responsive and rejected unauthenticated requests with HTTP 401.
+- Inherited tenant/subscription/resource-group administration assignments were deliberately not changed; administrators may still manage Basic or restore permissions. This is application isolation, not a deny-all administrative boundary.
+- Post-isolation live test succeeded for item 191302: review `board-191302-aa5e8542-5738-4c6a-9253-b6cdc73ee6ed`, operation `b8c8d06f4aad9bcf318bb512cd8ab59a`. Function ran 13:23:33-13:24:21 UTC (47.755 seconds), called the Free agent endpoint successfully, validated seven findings and seven diagram assessments, and completed Board writeback. Independent work-item readback confirmed High risk / Changes Required and the matching review ID in `System.History`.
+- Item 191302 revision 2 changed State and added the tag together, matching the current hook. Item 191299 changed State and added the tag in separate revisions; no matching Function review or Board feedback was found.
+- A duplicate delivery of the 191302 event was ignored while its first execution was processing, as intended. This run confirms end-to-end operation after Basic isolation with a Free-only agent configuration; Function traces do not separately expose the individual MCP retrieval calls, so no per-tool trace or managed-identity Basic denial is claimed for this run.
+- Basic rollback now requires restoring the needed roles and Search endpoint/agent selection, not merely changing the agent name. API-key authentication need not be restored for managed-identity connections.
+- Existing hook was last observed filtering `System.State`, not `System.Tags`; no hook configuration change was approved or made. A tag-only update might not invoke it. Inspect actual event delivery if a new trigger produces no Function telemetry.
+- Retaining Basic continues its capacity charges. Free ingestion SAS renewal is still required before 2026-11-04.
+
 ---
 
 ## 1. Project Overview
